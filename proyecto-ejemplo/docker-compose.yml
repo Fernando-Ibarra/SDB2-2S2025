@@ -1,0 +1,127 @@
+services:
+  master1:
+    image: postgres:16
+    container_name: master1
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ejemplo
+      POSTGRES_DB: moviedb
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    volumes:
+      - ./mm-config/data/master1/:/var/lib/postgresql/data
+      - ./mm-config/config/master1/master1.conf:/etc/postgresql/postgresql.conf:ro
+      - ./mm-config/load/master1:/docker-entrypoint-initdb.d
+      - ./pgbackrest/master1:/etc/pgbackrest:ro
+      - ./backups/master1:/var/lib/pgbackrest
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d moviedb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  master2:
+    image: postgres:16
+    container_name: master2
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ejemplo
+      POSTGRES_DB: moviedb
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    volumes:
+      - ./mm-config/data/master2/:/var/lib/postgresql/data
+      - ./mm-config/config/master2/master2.conf:/etc/postgresql/postgresql.conf:ro
+      - ./mm-config/load/master2:/docker-entrypoint-initdb.d
+      - ./pgbackrest/master2:/etc/pgbackrest:ro
+      - ./backups/master2:/var/lib/pgbackrest
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d moviedb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  setup:
+    image: postgres:16
+    depends_on:
+      master1:
+        condition: service_healthy
+      master2:
+        condition: service_healthy
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -e
+        echo "=== Configurando replicación bidireccional (maestro-maestro) ==="
+        echo "=== 1. Creando rol y permisos de replicación ==="
+        # Crear rol replicator en ambos
+        if [ "$(PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -Atqc "SELECT 1 FROM pg_roles WHERE rolname='replicator'")" != "1" ]; then
+          PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -c "CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD 'repl_pass'";
+        fi
+        if [ "$(PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -Atqc "SELECT 1 FROM pg_roles WHERE rolname='replicator'")" != "1" ]; then
+          PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -c "CREATE ROLE replicator WITH LOGIN REPLICATION PASSWORD 'repl_pass'";
+        fi
+
+        # Permisos de replicación
+        echo "=== 2. Configurando publicaciones y suscripciones ==="
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -c "ALTER ROLE replicator WITH REPLICATION;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -c "ALTER ROLE replicator WITH REPLICATION;"
+
+        # Permisos de lectura para sincronización inicial (publisher → subscriber)
+        echo "=== 3. Configurando permisos de lectura para replicación ==="
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA public TO replicator;"
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO replicator;"
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO replicator;"
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -v ON_ERROR_STOP=1 -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO replicator;"
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -v ON_ERROR_STOP=1 -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON SEQUENCES TO replicator;"
+
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA public TO replicator;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO replicator;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -v ON_ERROR_STOP=1 -c "GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO replicator;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -v ON_ERROR_STOP=1 -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO replicator;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -v ON_ERROR_STOP=1 -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON SEQUENCES TO replicator;"
+
+        # Publicaciones para todas las tablas del esquema public
+        echo "=== 4. Creando publicaciones y suscripciones cruzadas ==="
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -c "DROP PUBLICATION IF EXISTS pub_all;"
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -c "CREATE PUBLICATION pub_all FOR ALL TABLES;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -c "DROP PUBLICATION IF EXISTS pub_all;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -c "CREATE PUBLICATION pub_all FOR ALL TABLES;"
+
+        # Suscripciones cruzadas (bidireccionales) evitando loops
+        echo "=== 5. Creando suscripciones cruzadas (bidireccionales) ==="
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -c "DROP SUBSCRIPTION IF EXISTS sub_from_2;"
+        PGPASSWORD=ejemplo psql -h master1 -U app -d moviedb -c "
+          CREATE SUBSCRIPTION sub_from_2
+          CONNECTION 'host=master2 port=5432 user=replicator password=repl_pass dbname=moviedb'
+          PUBLICATION pub_all
+          WITH (create_slot = true, slot_name = 'slot_2_to_1', copy_data = true, origin = 'none');"
+
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -c "DROP SUBSCRIPTION IF EXISTS sub_from_1;"
+        PGPASSWORD=ejemplo psql -h master2 -U app -d moviedb -c "
+          CREATE SUBSCRIPTION sub_from_1
+          CONNECTION 'host=master1 port=5432 user=replicator password=repl_pass dbname=moviedb'
+          PUBLICATION pub_all
+          WITH (create_slot = true, slot_name = 'slot_1_to_2', copy_data = true, origin = 'none');"
+
+        echo "=== Configuración de replicación bidireccional completada ==="
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-lab
+    command: ["redis-server", "--loglevel", "warning"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-data:/data
+
+volumes:
+  master1_data:
+    external: true
+  master2_data:
+    external: true
+  redis-data:
+    external: true

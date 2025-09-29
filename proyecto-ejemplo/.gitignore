@@ -1,0 +1,9 @@
+redis-data/
+mm-config/data/
+backups/master1/archive/
+backups/master1/backup/
+backups/master2/archive/
+backups/master2/backup/
+locus/venv
+locus/.env
+locus/__pycache__
