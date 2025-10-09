@@ -1,0 +1,26 @@
+services:
+  db:
+    container_name: db-postgres
+    image: postgres:16.2
+    restart: always
+    volumes:
+      - ./postgres-db:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=bases2
+
+  mongodb:
+    container_name: db-mongo
+    image: mongo:7.0
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongo-db:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin
+      - MONGO_INITDB_DATABASE=bases2
