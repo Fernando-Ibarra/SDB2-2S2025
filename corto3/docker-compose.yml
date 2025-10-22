@@ -1,0 +1,80 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres-database
+    restart: always
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=corto3
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+  
+  pdAdmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin4
+    restart: always
+    depends_on:
+      - postgres
+    ports:
+      - 8080:80
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@bases2.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    volumes:
+      - ./pgadmin:/var/lib/pgadmin
+      - ./pgadmin:/certs/server.cert
+      - ./pgadmin:/certs/server.key
+      - ./pgadmin:/pgadmin4/servers.json
+  
+  mongodb:
+    container_name: mongo-database
+    image: mongo:7.0
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongo:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-lab
+    command: ["redis-server", "--loglevel", "warning"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis:/data
+
+  neo4j:
+    image: neo4j
+    container_name: neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=none
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_PLUGINS='["apoc","graph-data-science"]'
+    volumes:
+      - ./neo4j:/data
+      - ./import:/import
+      - ./plugins:/plugins
+    restart: unless-stopped
+
+volumes:
+  postgres:
+    external: true
+  pgadmin:
+    external: true
+  mongo:
+    external: true
+  redis:
+    external: true
+  neo4j:
+    external: true

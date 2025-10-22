@@ -1,0 +1,7 @@
+import/
+mongo/
+neo4j/
+pgadmin/
+plugins/
+postgres/
+redis/
